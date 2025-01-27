@@ -1,4 +1,10 @@
-# How to use
+## Supported Platform
+Linux Only.
+
+## How dose it work
+it will read `/proc/net/route` and `/proc/net/ipv6_route` then parse them.
+
+## How to use
 
 ```rust
 use proc_route_parser::{
