@@ -59,6 +59,7 @@ pub struct Ipv4RouteTable {
     pub line_iter: std::iter::Skip<std::io::Lines<BufReader<File>>>,
 }
 
+#[cfg(target_os = "linux")]
 impl Default for Ipv4RouteTable {
     fn default() -> Self {
         Self {

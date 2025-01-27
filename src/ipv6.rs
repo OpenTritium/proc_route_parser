@@ -111,6 +111,7 @@ pub struct Ipv6RouteTable {
     line_iter: std::io::Lines<BufReader<File>>,
 }
 
+#[cfg(target_os = "linux")]
 impl Default for Ipv6RouteTable {
     fn default() -> Self {
         Self {
