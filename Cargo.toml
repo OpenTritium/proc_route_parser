@@ -1,5 +1,6 @@
 [package]
 name = "proc_route_parser"
+description = "A simple parser for the /proc filesystem route file"
 version = "0.0.1"
 edition = "2024"
 authors = ["OpenTritium@tritium404@hotmail.com"]
