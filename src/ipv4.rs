@@ -1,10 +1,17 @@
+use crate::{
+    RouteParseError,
+    utils::{hex_char_to_u8, hex_str_to_bytes, hex_str_to_ipv4},
+};
 use std::{
     fs::File,
-    io::{BufRead, BufReader},
+    io::{self, BufRead, BufReader, Lines},
+    iter::Skip,
     net::Ipv4Addr,
+    path::Path,
+    str::FromStr,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Ipv4RouteEntry {
     pub name: String,
     pub dest: Ipv4Addr,
@@ -20,7 +27,7 @@ pub struct Ipv4RouteEntry {
 }
 
 bitflags::bitflags! {
-    #[derive(Debug)]
+    #[derive(Debug,Clone)]
     pub struct Ipv4RouteFlags : u16 {
         /// Route is active and available (RTF_UP)
         /// Indicates the route is valid and operational
@@ -56,43 +63,60 @@ bitflags::bitflags! {
 }
 
 pub struct Ipv4RouteTable {
-    pub line_iter: std::iter::Skip<std::io::Lines<BufReader<File>>>,
+    lines: Skip<Lines<BufReader<File>>>,
 }
 
-#[cfg(target_os = "linux")]
-impl Default for Ipv4RouteTable {
-    fn default() -> Self {
-        Self {
-            line_iter: BufReader::new(File::open("/proc/net/route").unwrap())
-                .lines()
-                .skip(1),
-        }
+impl Ipv4RouteTable {
+    pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+        let reader = File::open_buffered(path)?;
+        let lines = reader.lines().skip(1);
+        Ok(Self { lines })
     }
 }
 
 impl Iterator for Ipv4RouteTable {
-    type Item = Ipv4RouteEntry;
+    type Item = Result<Ipv4RouteEntry, RouteParseError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        use super::utils::*;
-        let Some(Ok(line)) = self.line_iter.next() else {
-            return None;
-        };
+        self.lines.next().map(|line_result| {
+            let line = line_result?;
+            line.parse::<Ipv4RouteEntry>()
+        })
+    }
+}
+
+impl FromStr for Ipv4RouteEntry {
+    type Err = RouteParseError;
+
+    fn from_str(line: &str) -> Result<Self, Self::Err> {
         let fields: Vec<&str> = line.split_whitespace().collect();
-        Some(Ipv4RouteEntry {
-            name: fields[0].to_string(),
-            dest: hex_str_to_ipv4(fields[1]).unwrap(),
-            gateway: hex_str_to_ipv4(fields[2]).unwrap(),
+        const IPV4_ROUTE_FILED_COUNT: usize = 11;
+        if fields.len() < IPV4_ROUTE_FILED_COUNT {
+            return Err(RouteParseError::InvalidFieldCount {
+                expected: IPV4_ROUTE_FILED_COUNT,
+                found: fields.len(),
+            });
+        }
+        let get_field = |i: usize| {
+            fields
+                .get(i)
+                .cloned()
+                .ok_or(RouteParseError::MissingField(i))
+        };
+        Ok(Ipv4RouteEntry {
+            name: get_field(0)?.to_string(),
+            dest: hex_str_to_ipv4(get_field(1)?)?,
+            gateway: hex_str_to_ipv4(get_field(2)?)?,
             flags: Ipv4RouteFlags::from_bits_retain(u16::from_be_bytes(
-                (*hex_str_to_bytes(fields[3]).unwrap()).try_into().unwrap(),
+                (*hex_str_to_bytes(get_field(3)?)?).try_into()?,
             )),
-            ref_count: hex_char_to_u8(fields[4].as_bytes()[0]).unwrap(),
-            use_count: hex_char_to_u8(fields[5].as_bytes()[0]).unwrap(),
-            metric: hex_char_to_u8(fields[6].as_bytes()[0]).unwrap(),
-            mask: hex_str_to_ipv4(fields[7]).unwrap(),
-            mtu: hex_char_to_u8(fields[8].as_bytes()[0]).unwrap(),
-            window: hex_char_to_u8(fields[9].as_bytes()[0]).unwrap(),
-            irtt: hex_char_to_u8(fields[10].as_bytes()[0]).unwrap(),
+            ref_count: hex_char_to_u8(get_field(4)?.as_bytes()[0])?,
+            use_count: hex_char_to_u8(get_field(5)?.as_bytes()[0])?,
+            metric: hex_char_to_u8(get_field(6)?.as_bytes()[0])?,
+            mask: hex_str_to_ipv4(get_field(7)?)?,
+            mtu: hex_char_to_u8(get_field(8)?.as_bytes()[0])?,
+            window: hex_char_to_u8(get_field(9)?.as_bytes()[0])?,
+            irtt: hex_char_to_u8(get_field(10)?.as_bytes()[0])?,
         })
     }
 }
