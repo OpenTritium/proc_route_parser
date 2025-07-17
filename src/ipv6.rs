@@ -1,10 +1,17 @@
+use crate::{
+    RouteParseError,
+    ipv4::Ipv4RouteFlags,
+    utils::{hex_char_pair_to_byte, hex_str_to_bytes, hex_str_to_ipv6},
+};
 use std::{
     fs::File,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Lines, Result as IoResult},
     net::Ipv6Addr,
+    path::Path,
+    str::FromStr,
 };
-use crate::ipv4::Ipv4RouteFlags;
-#[derive(Debug)]
+
+#[derive(Debug, Clone)]
 pub struct Ipv6RouteEntry {
     pub dest: Ipv6Addr,
     pub dest_prefix: u8,
@@ -19,7 +26,7 @@ pub struct Ipv6RouteEntry {
 }
 
 bitflags::bitflags! {
-    #[derive(Debug)]
+    #[derive(Debug,Clone)]
     pub struct Ipv6RouteFlags:u32 {
         /// Route is active and available (RTF_UP)
         /// Indicates the route is valid and operational
@@ -108,44 +115,59 @@ bitflags::bitflags! {
 }
 
 pub struct Ipv6RouteTable {
-    line_iter: std::io::Lines<BufReader<File>>,
+    line_iter: Lines<BufReader<File>>,
 }
 
-#[cfg(target_os = "linux")]
-impl Default for Ipv6RouteTable {
-    fn default() -> Self {
-        Self {
-            line_iter: BufReader::new(File::open("/proc/net/ipv6_route").unwrap()).lines(),
+impl Ipv6RouteTable {
+    pub fn open(file_path: impl AsRef<Path>) -> IoResult<Self> {
+        let reader = File::open_buffered(file_path)?;
+        let line_iter = reader.lines();
+        Ok(Self { line_iter })
+    }
+}
+
+impl FromStr for Ipv6RouteEntry {
+    type Err = RouteParseError;
+
+    fn from_str(line: &str) -> Result<Self, Self::Err> {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 10 {
+            return Err(RouteParseError::InvalidFieldCount {
+                expected: 10,
+                found: fields.len(),
+            });
         }
+        let get_field = |i: usize| {
+            fields
+                .get(i)
+                .cloned()
+                .ok_or(RouteParseError::MissingField(i))
+        };
+
+        Ok(Ipv6RouteEntry {
+            dest: hex_str_to_ipv6(get_field(0)?)?,
+            dest_prefix: hex_char_pair_to_byte(get_field(1)?.as_bytes().try_into()?)?,
+            src: hex_str_to_ipv6(get_field(2)?)?,
+            src_prefix: hex_char_pair_to_byte(get_field(3)?.as_bytes().try_into()?)?,
+            next_hop: hex_str_to_ipv6(get_field(4)?)?,
+            metric: u32::from_be_bytes((*hex_str_to_bytes(get_field(5)?)?).try_into()?),
+            ref_count: u32::from_be_bytes((*hex_str_to_bytes(get_field(6)?)?).try_into()?),
+            use_count: u32::from_be_bytes((*hex_str_to_bytes(get_field(7)?)?).try_into()?),
+            flags: Ipv6RouteFlags::from_bits_retain(u32::from_be_bytes(
+                (*hex_str_to_bytes(get_field(8)?)?).try_into()?,
+            )),
+            name: get_field(9)?.to_string(),
+        })
     }
 }
 
 impl Iterator for Ipv6RouteTable {
-    type Item = Ipv6RouteEntry;
+    type Item = Result<Ipv6RouteEntry, RouteParseError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        use super::utils::*;
-        let Some(Ok(line)) = self.line_iter.next() else {
-            return None;
-        };
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        Some(Ipv6RouteEntry {
-            dest: hex_str_to_ipv6(fields[0]).unwrap(),
-            dest_prefix: hex_char_pair_to_byte(fields[1].as_bytes().try_into().unwrap()).unwrap(),
-            src: hex_str_to_ipv6(fields[2]).unwrap(),
-            src_prefix: hex_char_pair_to_byte(fields[3].as_bytes().try_into().unwrap()).unwrap(),
-            next_hop: hex_str_to_ipv6(fields[4]).unwrap(),
-            metric: u32::from_be_bytes((*hex_str_to_bytes(fields[5]).unwrap()).try_into().unwrap()),
-            ref_count: u32::from_be_bytes(
-                (*hex_str_to_bytes(fields[6]).unwrap()).try_into().unwrap(),
-            ),
-            use_count: u32::from_be_bytes(
-                (*hex_str_to_bytes(fields[7]).unwrap()).try_into().unwrap(),
-            ),
-            flags: Ipv6RouteFlags::from_bits_retain(u32::from_be_bytes(
-                (*hex_str_to_bytes(fields[8]).unwrap()).try_into().unwrap(),
-            )),
-            name: fields[9].to_string(),
+        self.line_iter.next().map(|line_result| {
+            let line = line_result?;
+            line.parse::<Ipv6RouteEntry>()
         })
     }
 }
